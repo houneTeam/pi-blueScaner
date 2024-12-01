@@ -1,5 +1,3 @@
-# main.py
-
 import asyncio
 import sys
 import threading
@@ -8,10 +6,21 @@ from modules.gps_server import start_gps_server
 from modules.bluetooth_scanner import get_bluetooth_interfaces, scan_ble_devices
 from modules.database import initialize_database
 from modules import utils
-from modules.device_connector import process_devices, helper_process_devices
+from modules.device_connector import process_devices  # Removed helper_process_devices import
 from termcolor import colored
 
 def main():
+    # Print logo
+    logo = r'''                                       
+    _/_/_/    _/  _/_/_/    _/        _/_/_/_/   
+   _/    _/      _/    _/  _/        _/          
+  _/_/_/    _/  _/_/_/    _/        _/_/_/       
+ _/        _/  _/    _/  _/        _/            
+_/        _/  _/_/_/    _/_/_/_/  _/_/_/_/                                                         
+    '''
+    print(colored(logo, 'blue'))
+    print(colored('HouneTeam - PiBLE v0.2.0', 'white'))
+
     initialize_database()
 
     # Запускаем GPS сервер в отдельном потоке
@@ -55,8 +64,6 @@ def main():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         tasks = [scan_ble_devices(scan_adapter, update_mode, helper_mode)]
-        if helper_mode:
-            tasks.append(helper_process_devices(scan_adapter))
         loop.run_until_complete(asyncio.gather(*tasks))
     elif mode == "2":
         utils.connect_mode = True
@@ -86,8 +93,6 @@ def main():
             scan_ble_devices(scan_adapter, update_mode, helper_mode),
             process_devices(connect_adapter)
         ]
-        if helper_mode:
-            tasks.append(helper_process_devices(scan_adapter))
         loop.run_until_complete(asyncio.gather(*tasks))
     else:
         print("Invalid mode selected.")

@@ -1,5 +1,3 @@
-# modules/database.py
-
 import sqlite3
 from datetime import datetime
 from . import utils
@@ -14,7 +12,6 @@ def initialize_database():
             name TEXT,
             mac TEXT UNIQUE,
             rssi INTEGER,
-            device_info TEXT,
             service TEXT,
             timestamp TEXT,
             adapter TEXT,
@@ -31,19 +28,25 @@ def initialize_database():
     connection.commit()
 
     # Add new columns if they don't exist
-    columns = ["device_info", "service", "last_count_update"]
+    columns = ["service", "last_count_update"]
     for column in columns:
         try:
             cursor.execute(f'ALTER TABLE devices ADD COLUMN {column} TEXT')
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+    # Remove 'device_info' column if it exists
+    try:
+        cursor.execute('''ALTER TABLE devices DROP COLUMN device_info''')
+    except sqlite3.OperationalError:
+        pass  # Column does not exist
+
     connection.commit()
     connection.close()
 
 def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_data,
                       service_uuids, service_data, tx_power, platform_data, gps_data,
-                      device_info=None, service_list=None, detection_count=1,
+                      service_list=None, detection_count=1,
                       update_existing=False):
     try:
         connection = sqlite3.connect("bluetooth_devices.db")
@@ -109,9 +112,6 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
             if gps_data is not None:
                 update_fields.append("gps = ?")
                 params.append(gps_data)
-            if device_info is not None:
-                update_fields.append("device_info = ?")
-                params.append(device_info)
             if service_list is not None:
                 update_fields.append("service = ?")
                 params.append(service_list)
@@ -136,10 +136,10 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
                 INSERT OR IGNORE INTO devices (
                     name, mac, rssi, timestamp, adapter, manufacturer_data,
                     service_uuids, service_data, tx_power, platform_data, gps,
-                    device_info, service, detection_count, last_count_update
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    service, detection_count, last_count_update
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (device_name, mac, rssi, timestamp, adapter, manufacturer_data, service_uuids,
-                  service_data, tx_power, platform_data, gps_data, device_info, service_list, detection_count, timestamp))
+                  service_data, tx_power, platform_data, gps_data, service_list, detection_count, timestamp))
 
         connection.commit()
         connection.close()
@@ -171,12 +171,14 @@ def get_database_statistics():
         total_devices = cursor.fetchone()[0]
         cursor.execute('''SELECT COUNT(*) FROM devices WHERE name != "Unknown"''')
         named_devices = cursor.fetchone()[0]
+        cursor.execute('''SELECT COUNT(*) FROM devices WHERE service IS NOT NULL AND service != ""''')
+        devices_with_service = cursor.fetchone()[0]
         connection.close()
-        return total_devices, named_devices
+        return total_devices, named_devices, devices_with_service
     except sqlite3.DatabaseError as e:
         logging.error(f"Database error: {e}")
         print(f"Database error: {e}")
-        return 0, 0
+        return 0, 0, 0
 
 def get_detection_count(mac):
     try:

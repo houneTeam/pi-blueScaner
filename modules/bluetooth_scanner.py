@@ -1,5 +1,3 @@
-# modules/bluetooth_scanner.py
-
 import asyncio
 import subprocess
 import logging
@@ -9,10 +7,16 @@ from termcolor import colored
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
 from bleak.backends.scanner import AdvertisementData
-from .database import save_device_to_db, device_exists, get_database_statistics, get_detection_count, get_device_services
+from .database import (
+    save_device_to_db,
+    device_exists,
+    get_database_statistics,
+    get_detection_count,
+    get_device_services,
+)
 from .utils import is_mac_address
 from . import utils
-from .device_connector import devices_to_connect, devices_to_connect_helper
+from .device_connector import devices_to_connect
 import sqlite3
 
 def get_bluetooth_interfaces():
@@ -43,10 +47,18 @@ async def scan_ble_devices(adapter, update_mode, helper_mode=False):
     last_info_time = time.time()
     last_gps_status = utils.gps_status
 
+    detection_counts = {}
+    rssi_threshold = -70  # Adjust as needed
+    detection_threshold = 3  # Adjust as needed
+
+    def device_has_services(mac):
+        services = get_device_services(mac)
+        return services is not None
+
     def detection_callback(device: BLEDevice, advertisement_data: AdvertisementData):
         nonlocal last_info_time
 
-        rssi = advertisement_data.rssi if advertisement_data.rssi is not None else "Unknown"
+        rssi = device.rssi if device.rssi is not None else -100
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         tx_power = advertisement_data.tx_power or "Unknown"
         manufacturer_data = str(advertisement_data.manufacturer_data)
@@ -63,13 +75,20 @@ async def scan_ble_devices(adapter, update_mode, helper_mode=False):
         else:
             gps_data = None
 
-        if device_exists(device.address):
+        mac_address = device.address
+
+        # Increment detection count
+        detection_counts[mac_address] = detection_counts.get(mac_address, 0) + 1
+        detection_count = detection_counts[mac_address]
+
+        # Save device to database
+        if device_exists(mac_address):
             if update_mode:
                 print(f"{colored('[UPDATED]', 'yellow')} {device_name} (Interface: {adapter}) {rssi_display}")
                 save_device_to_db(
-                    device_name, device.address, rssi, timestamp, adapter, manufacturer_data, service_uuids,
+                    device_name, mac_address, rssi, timestamp, adapter, manufacturer_data, service_uuids,
                     service_data, tx_power, platform_data, gps_data=gps_data,
-                    device_info=None, service_list=None,
+                    service_list=None,
                     update_existing=True
                 )
             else:
@@ -77,30 +96,31 @@ async def scan_ble_devices(adapter, update_mode, helper_mode=False):
         else:
             print(f"{colored('[NEW]', 'green')} {device_name} (Interface: {adapter}) {rssi_display}")
             save_device_to_db(
-                device_name, device.address, rssi, timestamp, adapter, manufacturer_data, service_uuids,
+                device_name, mac_address, rssi, timestamp, adapter, manufacturer_data, service_uuids,
                 service_data, tx_power, platform_data, gps_data=gps_data,
-                device_info=None, service_list=None
+                service_list=None
             )
 
-        detection_count = get_detection_count(device.address)
         print(f"{colored('[INFO]', 'blue')} Device {device_name} detected {detection_count} times.")
 
-        # Add device to queue only if no device is being processed
-        if not utils.device_being_processed and utils.connect_mode:
-            utils.device_being_processed = True  # Set the flag
-            devices_to_connect.put_nowait(device)
-
-        # Similarly for helper mode
-        if helper_mode and not utils.device_being_processed and get_device_services(device.address):
-            utils.device_being_processed = True  # Set the flag
-            devices_to_connect_helper.put_nowait(device)
+        # Check if device meets criteria to connect
+        if (detection_count >= detection_threshold and rssi >= rssi_threshold and
+                not device_has_services(mac_address)):
+            if not utils.device_being_processed:
+                devices_to_connect.put_nowait(device)
+                print(f"{colored('[QUEUE]', 'yellow')} Added {device_name} ({mac_address}) to connection queue.")
 
         if time.time() - last_info_time >= 5:
             last_info_time = time.time()
-            total_devices, named_devices = get_database_statistics()
-            print(f"{colored('[INFO]', 'blue')} Total devices in database: {total_devices}, Named devices: {named_devices}")
+            total_devices, named_devices, devices_with_service = get_database_statistics()
+            devices_with_service_display = colored(f"{devices_with_service}", "yellow")
+            print(
+                f"{colored('[INFO]', 'blue')} Total devices in database: {total_devices}, "
+                f"Named devices: {named_devices}, Devices with service info: {devices_with_service_display}"
+            )
 
-    scanner = BleakScanner(adapter=adapter, detection_callback=detection_callback)
+    scanner = BleakScanner(adapter=adapter)
+    scanner.register_detection_callback(detection_callback)
     logging.info("Starting Bluetooth scanning...")
     print(f"{colored('[INFO]', 'blue')} Starting Bluetooth scanning on adapter {adapter}...")
     await scanner.start()
@@ -119,18 +139,3 @@ async def scan_ble_devices(adapter, update_mode, helper_mode=False):
         utils.scanning_started = False  # Reset flag after stopping scanning
         print(f"{colored('[INFO]', 'blue')} Stopped Bluetooth scanning on adapter {adapter}.")
 
-def get_detection_count(mac):
-    try:
-        connection = sqlite3.connect("bluetooth_devices.db")
-        cursor = connection.cursor()
-        cursor.execute("SELECT detection_count FROM devices WHERE mac = ?", (mac,))
-        result = cursor.fetchone()
-        connection.close()
-        if result:
-            return result[0]
-        else:
-            return 0
-    except sqlite3.DatabaseError as e:
-        logging.error(f"Database error: {e}")
-        print(f"Database error: {e}")
-        return 0
