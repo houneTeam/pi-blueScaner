@@ -4,20 +4,20 @@ from flask import Flask, request, jsonify
 import threading
 import time
 from termcolor import colored
-from . import utils  # Импортируем utils для доступа к глобальным переменным и функциям
+from . import utils  # Import utils for access to global variables and functions
 import logging
 
 app = Flask(__name__)
 
-# Подавляем логирование запросов Flask
+# Get logger for this module
+logger = logging.getLogger(__name__)
+
+# Suppress Flask request logging
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
-# Создаем событие для сигнализации о получении GPS-данных
-gps_data_received_event = threading.Event()
-
 def update_gps_status():
-    """Обновляет gps_status на основе актуальности GPS-данных."""
+    """Updates gps_status based on freshness of GPS data."""
     while True:
         if utils.is_gps_data_fresh():
             utils.gps_status = "online"
@@ -34,13 +34,15 @@ def receive_gps():
         utils.latest_gps_coords["latitude"] = latitude
         utils.latest_gps_coords["longitude"] = longitude
         utils.last_gps_update_time = time.time()
-        # Сигнализируем о получении GPS-данных
-        gps_data_received_event.set()
-        # Выводим [GPS DATA] только если сканирование началось
+        # Signal that GPS data has been received
+        utils.gps_data_received = True
+        logger.info(f"Received GPS data: Latitude={latitude}, Longitude={longitude}")
+        # Display GPS data only if scanning has started
         if utils.scanning_started:
             print(f"{colored('[GPS DATA]', 'cyan')} Current Coordinates: {latitude}, {longitude}")
         return jsonify({"status": "success"}), 200
     else:
+        logger.warning("Received invalid GPS data.")
         return jsonify({"status": "error", "message": "Invalid data"}), 400
 
 @app.route('/gps', methods=['GET'])
@@ -48,8 +50,9 @@ def gps_status_route():
     return jsonify({"status": utils.gps_status}), 200
 
 def start_gps_server():
-    print(f"{colored('[INFO]', 'blue')} GPS server online.")
-    # Запускаем поток для обновления gps_status
+    print("GPS server is starting...")
+    logger.info("GPS server started.")
+    # Start thread to update gps_status
     threading.Thread(target=update_gps_status, daemon=True).start()
-    app.run(host='192.168.4.1', port=5000, debug=False, use_reloader=False)
+    app.run(host='0.0.0.0', port=5000, debug=False, use_reloader=False)
 

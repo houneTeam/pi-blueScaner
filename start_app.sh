@@ -3,8 +3,10 @@
 # Завершение всех процессов, использующих порт 5000
 sudo fuser -k 5000/tcp
 
+sudo systemctl restart bluetooth
+
 # Активация виртуального окружения
-source venv/bin/activate
+# source venv/bin/activate
 
 # Запуск Python-скрипта
-python3 main.py
+sudo venv/bin/python3 main.py
