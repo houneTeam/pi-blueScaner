@@ -8,5 +8,7 @@ sudo systemctl restart bluetooth
 # Активация виртуального окружения
 # source venv/bin/activate
 
+hciconfig
+
 # Запуск Python-скрипта
 sudo venv/bin/python3 main.py
