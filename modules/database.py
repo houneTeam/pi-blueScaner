@@ -1,3 +1,5 @@
+# modules/database.py
+
 import sqlite3
 from datetime import datetime
 from . import utils
@@ -6,6 +8,8 @@ import logging
 def initialize_database():
     connection = sqlite3.connect("bluetooth_devices.db")
     cursor = connection.cursor()
+
+    # 'devices' table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS devices (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,13 +37,21 @@ def initialize_database():
         try:
             cursor.execute(f'ALTER TABLE devices ADD COLUMN {column} TEXT')
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
 
-    # Remove 'device_info' column if it exists
+    # Remove old column if it exists
     try:
         cursor.execute('''ALTER TABLE devices DROP COLUMN device_info''')
     except sqlite3.OperationalError:
-        pass  # Column does not exist
+        pass
+
+    # gatt_services table to store expanded GATT data
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS gatt_services (
+            mac TEXT PRIMARY KEY,
+            service TEXT
+        )
+    ''')
 
     connection.commit()
     connection.close()
@@ -53,35 +65,29 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
         cursor = connection.cursor()
 
         if update_existing:
-            # Get current detection_count and last_count_update from the database
             cursor.execute('SELECT detection_count, last_count_update FROM devices WHERE mac = ?', (mac,))
             result = cursor.fetchone()
             if result:
                 existing_detection_count, last_count_update_str = result
                 detection_count = existing_detection_count
 
-                current_time = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-
                 if last_count_update_str:
-                    last_count_update = datetime.strptime(last_count_update_str, "%Y-%m-%d %H:%M:%S")
-                    time_diff = (current_time - last_count_update).total_seconds()
+                    last_count_update_time = datetime.strptime(last_count_update_str, "%Y-%m-%d %H:%M:%S")
+                    current_time = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    time_diff = (current_time - last_count_update_time).total_seconds()
                 else:
                     time_diff = None
 
-                # If more than 30 minutes have passed or program restarted (last_count_update is missing), increment detection_count
                 if time_diff is None or time_diff >= 1800:
                     detection_count += 1
-                    last_count_update = timestamp
-                else:
-                    last_count_update = last_count_update_str
+                    last_count_update_str = timestamp
             else:
-                # If record doesn't exist, set initial values
                 detection_count = 1
-                last_count_update = timestamp
+                last_count_update_str = timestamp
 
-            # Build UPDATE query dynamically based on provided data
             update_fields = []
             params = []
+
             if device_name is not None:
                 update_fields.append("name = ?")
                 params.append(device_name)
@@ -115,12 +121,11 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
             if service_list is not None:
                 update_fields.append("service = ?")
                 params.append(service_list)
-            # Update detection_count and last_count_update
+
             update_fields.append("detection_count = ?")
             params.append(detection_count)
             update_fields.append("last_count_update = ?")
-            params.append(last_count_update)
-            # Add MAC address to parameters
+            params.append(last_count_update_str)
             params.append(mac)
 
             update_query = f'''
@@ -128,8 +133,8 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
                     {', '.join(update_fields)}
                 WHERE mac = ?
             '''
-
             cursor.execute(update_query, params)
+
         else:
             # Insert new record
             cursor.execute('''
@@ -138,11 +143,26 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
                     service_uuids, service_data, tx_power, platform_data, gps,
                     service, detection_count, last_count_update
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (device_name, mac, rssi, timestamp, adapter, manufacturer_data, service_uuids,
-                  service_data, tx_power, platform_data, gps_data, service_list, detection_count, timestamp))
+            ''', (
+                device_name,
+                mac,
+                rssi,
+                timestamp,
+                adapter,
+                manufacturer_data,
+                service_uuids,
+                service_data,
+                tx_power,
+                platform_data,
+                gps_data,
+                service_list,
+                detection_count,
+                timestamp
+            ))
 
         connection.commit()
         connection.close()
+
     except sqlite3.DatabaseError as e:
         logging.error(f"Database error: {e}")
         print(f"Database error: {e}")
@@ -150,11 +170,30 @@ def save_device_to_db(device_name, mac, rssi, timestamp, adapter, manufacturer_d
         logging.error(f"Error saving device to database: {e}")
         print(f"Error saving device to database: {e}")
 
+def update_gatt_services(mac, services):
+    """Insert or update GATT services info into the 'gatt_services' table."""
+    try:
+        conn = sqlite3.connect("bluetooth_devices.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO gatt_services (mac, service)
+            VALUES (?, ?)
+            ON CONFLICT(mac) DO UPDATE SET service = excluded.service
+        """, (mac, services))
+        conn.commit()
+        conn.close()
+    except sqlite3.DatabaseError as e:
+        logging.error(f"Database error (gatt_services): {e}")
+        print(f"Database error (gatt_services): {e}")
+    except Exception as e:
+        logging.error(f"Error updating gatt_services: {e}")
+        print(f"Error updating gatt_services: {e}")
+
 def device_exists(mac):
     try:
         connection = sqlite3.connect("bluetooth_devices.db")
         cursor = connection.cursor()
-        cursor.execute('''SELECT COUNT(*) FROM devices WHERE mac = ?''', (mac,))
+        cursor.execute('SELECT COUNT(*) FROM devices WHERE mac = ?', (mac,))
         result = cursor.fetchone()[0]
         connection.close()
         return result > 0
@@ -167,11 +206,11 @@ def get_database_statistics():
     try:
         connection = sqlite3.connect("bluetooth_devices.db")
         cursor = connection.cursor()
-        cursor.execute('''SELECT COUNT(*) FROM devices''')
+        cursor.execute('SELECT COUNT(*) FROM devices')
         total_devices = cursor.fetchone()[0]
-        cursor.execute('''SELECT COUNT(*) FROM devices WHERE name != "Unknown"''')
+        cursor.execute('SELECT COUNT(*) FROM devices WHERE name != "Unknown"')
         named_devices = cursor.fetchone()[0]
-        cursor.execute('''SELECT COUNT(*) FROM devices WHERE service IS NOT NULL AND service != ""''')
+        cursor.execute('SELECT COUNT(*) FROM devices WHERE service IS NOT NULL AND service != ""')
         devices_with_service = cursor.fetchone()[0]
         connection.close()
         return total_devices, named_devices, devices_with_service
@@ -180,34 +219,3 @@ def get_database_statistics():
         print(f"Database error: {e}")
         return 0, 0, 0
 
-def get_detection_count(mac):
-    try:
-        connection = sqlite3.connect("bluetooth_devices.db")
-        cursor = connection.cursor()
-        cursor.execute("SELECT detection_count FROM devices WHERE mac = ?", (mac,))
-        result = cursor.fetchone()
-        connection.close()
-        if result:
-            return result[0]
-        else:
-            return 0
-    except sqlite3.DatabaseError as e:
-        logging.error(f"Database error: {e}")
-        print(f"Database error: {e}")
-        return 0
-
-def get_device_services(mac):
-    try:
-        connection = sqlite3.connect("bluetooth_devices.db")
-        cursor = connection.cursor()
-        cursor.execute("SELECT service FROM devices WHERE mac = ?", (mac,))
-        result = cursor.fetchone()
-        connection.close()
-        if result and result[0]:
-            return result[0]
-        else:
-            return None
-    except sqlite3.DatabaseError as e:
-        logging.error(f"Database error: {e}")
-        print(f"Database error: {e}")
-        return None

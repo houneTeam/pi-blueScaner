@@ -1,3 +1,5 @@
+# modules/utils.py
+
 import re
 import time
 import pickle
@@ -14,11 +16,11 @@ GPS_DATA_TIMEOUT = 300
 
 device_last_count_update = {}
 
-connect_mode = False
+connect_mode = True  # We can just set this to True by default if you like
 gps_data_received = False
-use_gps = True  # ?? ?????????, ???????? ? main.py
+use_gps = False
 
-max_connect = 10
+max_connect = 5  # Default concurrency limit
 
 def is_mac_address(name):
     mac_pattern = r'([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})'
